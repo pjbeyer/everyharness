@@ -46,11 +46,15 @@ export type BootstrapMode =
   | { kind: 'none' }
 
 // A resolved harnesses.<name> block: the per-harness hook tier ('generated'
-// default | 'own') and an optional manifest patch (deep-merged into the
-// adapter's generated manifest; a null value is the delete-sentinel).
+// default | 'own'), an optional manifest patch (deep-merged into the
+// adapter's generated manifest; a null value is the delete-sentinel), and —
+// hermes only — optional MCP server declarations (validated here for key
+// shape; the every-declaration-needs-a-matching-mcp.json-server rule is
+// enforced at emit time in src/adapters/hermes-mcp.ts, which has the model).
 export interface HarnessSettings {
   hooks: 'generated' | 'own'
   manifest?: Record<string, unknown>
+  servers?: Record<string, Record<string, unknown>>
 }
 
 // Shared with import.ts, which validates a Claude plugin.json's name against
@@ -250,8 +254,8 @@ function resolveHarnessSettings(raw: Record<string, unknown> | undefined): {
       throw new ConfigError(`harnesses.${key}: must be a mapping of hooks and/or manifest`)
     }
     for (const settingKey of Object.keys(value)) {
-      if (settingKey !== 'hooks' && settingKey !== 'manifest') {
-        throw new ConfigError(`harnesses.${key}.${settingKey}: unknown key (expected hooks or manifest)`)
+      if (settingKey !== 'hooks' && settingKey !== 'manifest' && settingKey !== 'servers') {
+        throw new ConfigError(`harnesses.${key}.${settingKey}: unknown key (expected hooks, manifest, or servers)`)
       }
     }
     const entry: HarnessSettings = { hooks: 'generated' }
@@ -269,10 +273,56 @@ function resolveHarnessSettings(raw: Record<string, unknown> | undefined): {
       }
       entry.manifest = manifest
     }
+    if ('servers' in value) {
+      // servers is the hermes MCP server-declaration block; every other
+      // harness has no MCP emission delta to configure, so a servers block
+      // anywhere else is a ConfigError (not a silent no-op).
+      if (key !== 'hermes') {
+        throw new ConfigError(
+          `harnesses.${key}.servers: only the hermes harness has MCP server declarations`,
+        )
+      }
+      const servers = value.servers
+      if (!isPlainObject(servers)) {
+        throw new ConfigError('harnesses.hermes.servers: must be a mapping of server name to declaration')
+      }
+      const validated: Record<string, Record<string, unknown>> = {}
+      for (const [serverName, declaration] of Object.entries(servers)) {
+        if (!isPlainObject(declaration)) {
+          throw new ConfigError(`harnesses.hermes.servers.${serverName}: must be a mapping`)
+        }
+        const unknown = Object.keys(declaration).filter((k) => !HERMES_SERVER_DECLARATION_KEYS.has(k))
+        if (unknown.length) {
+          throw new ConfigError(`harnesses.hermes.servers.${serverName}: unknown key(s) ${unknown.join(', ')}`, [
+            `valid keys: ${[...HERMES_SERVER_DECLARATION_KEYS].sort().join(', ')}`,
+          ])
+        }
+        validated[serverName] = declaration
+      }
+      entry.servers = validated
+    }
     settings[key] = entry
   }
   return { exclude, settings }
 }
+
+// The Hermes extension server-declaration keys, mirrored from installed
+// hermes-agent source (hermes_cli/agent_plugins.py _SERVER_DECLARATION_KEYS,
+// verified 2026-11-04). Hermes degrades unknown keys with a diagnostic
+// instead of failing; we are STRICTER at generate time because a typo'd key
+// here (e.g. `spend_limits`) would silently drop a budget the author
+// declared — Hermes' own diagnostic only surfaces at install, and only as a
+// warning line. Keep in sync with that source set.
+export const HERMES_SERVER_DECLARATION_KEYS = new Set([
+  'app',
+  'requires',
+  'liveness',
+  'trust',
+  'timeout',
+  'costs',
+  'spend_limit',
+  'cost_unit',
+])
 
 // Resolves the tagged bootstrap value into its internal model: the string
 // literals map to 'none'/'generate', the { skill } object to the skill mode,
