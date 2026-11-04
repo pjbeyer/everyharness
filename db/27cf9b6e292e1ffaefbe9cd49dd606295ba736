@@ -1,0 +1,31 @@
+fixtures/kitchen-sink/everyharness.yaml
+  s_4439eb91114907::t_dc545cdcad9137 17-25
+tests/adapters/agent-plugins.test.ts
+  s_4439eb91114907::t_be8fe57e5080fc 43-53,57,63-67
+tests/generate.test.ts
+  s_4439eb91114907::t_c4f90868786f2f 311-328
+tests/adapters/hermes.test.ts
+  s_4439eb91114907::t_9cf03b377f1e8d 63,68
+fixtures/kitchen-sink/.mcp.json
+  s_4439eb91114907::t_deb992f309014b 6-12
+tests/docs-emit.test.ts
+  s_4439eb91114907::t_80b154ce817613 116
+tests/__snapshots__/generate.test.ts.snap
+  s_4439eb91114907::t_dbb4ecfad86913 910,923,936-954,1062,1235-1241,1287-1304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.6",
+  "base_commit_sha": "db27cf9b6e292e1ffaefbe9cd49dd606295ba736",
+  "prompts": {},
+  "sessions": {
+    "s_4439eb91114907": {
+      "agent_id": {
+        "tool": "hermes",
+        "id": "20261103_144259_6bf69a",
+        "model": "smart-router"
+      },
+      "human_author": "Phil Beyer <6152278+pjbeyer@users.noreply.github.com>"
+    }
+  }
+}
