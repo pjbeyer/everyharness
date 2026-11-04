@@ -2,6 +2,7 @@ import type { GeneratedFile } from '../fileset.js'
 import type { PluginModel } from '../model.js'
 import type { HarnessAdapter, EmitResult } from './types.js'
 import { baseManifestFields, json } from './shared.js'
+import { hermesServerDeclarations, mergeHermesExtension } from './hermes-mcp.js'
 
 // Agent Plugins 1.0 (https://agent-plugins.org) only defines skills/ and
 // root-level plugin.json / mcp.json — commands, agents, and hooks have no
@@ -54,9 +55,9 @@ function pluginManifest(model: PluginModel): { manifest: Record<string, unknown>
   const warnings: string[] = []
   const manifest: Record<string, unknown> = { $schema: PLUGIN_SCHEMA, ...baseManifestFields(config) }
 
+  let extensions: Record<string, unknown> = {}
   const override = config.harnesses.settings['agent-plugins-1.0']?.manifest
   if (isPlainObject(override) && isPlainObject(override.extensions)) {
-    const extensions: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(override.extensions)) {
       if (isPlainObject(value)) {
         extensions[key] = value
@@ -64,8 +65,20 @@ function pluginManifest(model: PluginModel): { manifest: Record<string, unknown>
         warnings.push(`extensions entry "${key}" is not an object; dropped`)
       }
     }
-    if (Object.keys(extensions).length) manifest.extensions = extensions
   }
+
+  // Hermes reads its MCP server declarations (trust/timeout/costs/...)
+  // from THIS file's extensions."com.nousresearch.hermes".servers — the
+  // plugin.json we emit here is the one a dual-manifest install loads
+  // (portable wins discovery). The declarations come from
+  // harnesses.hermes.servers in everyharness.yaml; an author's explicit
+  // extensions entry still wins per-key, so overrides keep working.
+  const { extensions: mergedExtensions, warnings: mergeWarnings } = mergeHermesExtension(
+    extensions,
+    hermesServerDeclarations(model),
+  )
+  warnings.push(...mergeWarnings)
+  if (Object.keys(mergedExtensions).length) manifest.extensions = mergedExtensions
 
   return { manifest, warnings }
 }
