@@ -190,6 +190,18 @@ def register(ctx):
         if os.path.isfile(skill_md):
             ctx.register_skill(name, Path(skill_md))
 
+    # Translated hooks register AFTER skills so a broken bridge can never
+    # take skill registration down with it (same ordering rationale as the
+    # bootstrap path).
+    try:
+        _register_hook_bridges(ctx)
+    except Exception as e:
+        print(
+            f"kitchen-sink plugin: hooks bridge unavailable ({e}); "
+            "skills registered without hook bridges",
+            file=_sys.stderr,
+        )
+
     # The bootstrap file is a separate, less load-bearing concern than the
     # skills registered above -- a missing or unreadable bootstrap should
     # degrade to "skills work, no session bootstrap" rather than disabling
@@ -221,6 +233,200 @@ def register(ctx):
 
     ctx.register_hook("pre_llm_call", pre_llm_call)
 
+
+# --- Hooks bridge (translated from the Claude-format hooks component) ---
+
+import json
+import re as _re
+import subprocess as _subprocess
+import sys as _sys
+
+_HOOK_EVENTS = json.loads(
+    "[{\\"event\\":\\"on_session_start\\",\\"commands\\":[\\"echo '{\\\\\\"hookSpecificOutput\\\\\\":{\\\\\\"hookEventName\\\\\\":\\\\\\"SessionStart\\\\\\",\\\\\\"additionalContext\\\\\\":\\\\\\"kitchen-sink hook ran\\\\\\"}}'\\"],\\"matcher\\":\\"startup|clear|compact\\"},{\\"event\\":\\"pre_tool_call\\",\\"commands\\":[\\"python3 -c \\\\\\"import json,sys; p=json.load(sys.stdin); ti=p.get('tool_input'); ti=ti if isinstance(ti, dict) else {}; print(json.dumps({'decision':'block','reason':'kitchen-sink PreToolUse guard: ' + p['tool_name']})) if ti.get('danger') else None\\\\\\"\\"],\\"matcher\\":\\"terminal\\"},{\\"event\\":\\"post_tool_call\\",\\"commands\\":[\\"python3 -c \\\\\\"import json,sys; json.load(sys.stdin); print(json.dumps({'hookSpecificOutput':{'hookEventName':'PostToolUse','updatedToolOutput':'kitchen-sink PostToolUse rewrite'}}))\\\\\\"\\"],\\"matcher\\":\\".*\\"},{\\"event\\":\\"transform_tool_result\\",\\"commands\\":[\\"python3 -c \\\\\\"import json,sys; json.load(sys.stdin); print(json.dumps({'hookSpecificOutput':{'hookEventName':'PostToolUse','updatedToolOutput':'kitchen-sink PostToolUse rewrite'}}))\\\\\\"\\"],\\"matcher\\":\\".*\\"}]"
+)
+
+_CLAUDE_EVENT_NAMES = {
+    "pre_tool_call": "PreToolUse",
+    "post_tool_call": "PostToolUse",
+    "transform_tool_result": "PostToolUse",
+    "on_session_start": "SessionStart",
+    "on_session_end": "SessionEnd",
+}
+
+_TOOL_EVENTS = ("pre_tool_call", "post_tool_call", "transform_tool_result")
+
+
+def _decode_tool_input(raw):
+    """Undo double-encoded JSON envelopes: Claude tool-call input can arrive
+    as a JSON string containing JSON. Try the inner parse; on failure keep
+    the original value so a plain string is never mangled."""
+    if not isinstance(raw, str):
+        return raw
+    stripped = raw.strip()
+    if not (stripped.startswith("{") or stripped.startswith("[")):
+        return raw
+    try:
+        return json.loads(stripped)
+    except (ValueError, TypeError):
+        return raw
+
+
+def _run_hook_commands(event, spec, **kwargs):
+    """Run every matching command for one hook event. Returns a list of
+    parsed-stdout dicts/None per command. Never raises: an observer bridge
+    must stay best-effort, and the gate bridge converts failures to blocks
+    at the caller."""
+    tool_name = kwargs.get("tool_name") or ""
+    matcher = spec.get("matcher")
+    if matcher and event in _TOOL_EVENTS:
+        if not _re.search(matcher, tool_name):
+            return []
+    payload = {
+        "hook_event_name": _CLAUDE_EVENT_NAMES.get(event, event),
+        "tool_name": tool_name,
+        "tool_input": _decode_tool_input(kwargs.get("args")),
+        "session_id": kwargs.get("session_id") or "",
+        "cwd": os.getcwd() if callable(getattr(os, "getcwd", None)) else "",
+        "extra": {k: v for k, v in kwargs.items()
+                  if k not in ("tool_name", "args", "session_id")},
+    }
+    stdin_text = json.dumps(payload)
+    timeout = int(spec.get("timeout") or 60)
+    outputs = []
+    for command in spec["commands"]:
+        try:
+            proc = _subprocess.run(
+                command,
+                input=stdin_text,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            print(
+                f"kitchen-sink plugin: hook command failed ({exc})",
+                file=_sys.stderr,
+            )
+            outputs.append({"__failed__": True, "__stderr__": str(exc)})
+            continue
+        parsed = None
+        if proc.stdout.strip():
+            try:
+                parsed = json.loads(proc.stdout)
+            except (ValueError, TypeError):
+                parsed = None
+        outputs.append(
+            {"__returncode__": proc.returncode, "__stdout_json__": parsed,
+             "__stderr__": proc.stderr, "__stdout__": proc.stdout}
+        )
+    return outputs
+
+
+def _block_message(out):
+    """Claude decision contract -> Hermes block directive, or None to pass.
+    Exit 2 blocks even without JSON; a JSON denial uses its reason."""
+    if not isinstance(out, dict):
+        return None
+    if out.get("__returncode__") == 2:
+        stderr = (out.get("__stderr__") or "").strip()
+        if stderr:
+            return stderr
+        payload = out.get("__stdout_json__")
+        if isinstance(payload, dict):
+            reason = payload.get("reason") or payload.get("message")
+            if isinstance(reason, str) and reason.strip():
+                return reason.strip()
+        return "Blocked by kitchen-sink hook (exit 2)."
+    payload = out.get("__stdout_json__")
+    if not isinstance(payload, dict):
+        return None
+    hso = payload.get("hookSpecificOutput")
+    if isinstance(hso, dict) and hso.get("permissionDecision") == "deny":
+        reason = hso.get("permissionDecisionReason") or payload.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
+        return "Blocked by kitchen-sink hook."
+    decision = payload.get("decision")
+    if decision == "block":
+        reason = payload.get("reason") or payload.get("message")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
+        return "Blocked by kitchen-sink hook."
+    return None
+
+
+def _make_gate_bridge(event, specs):
+    """pre_tool_call: fail-closed gate. A raising/timeout hook must block,
+    never pass — Hermes enforces the same contract for its own dispatch,
+    and _block_message already converts every denial shape."""
+
+    def _bridge(**kwargs):
+        for spec in specs:
+            for out in _run_hook_commands(event, spec, **kwargs):
+                message = _block_message(out)
+                if message is not None:
+                    return {"action": "block", "message": message}
+        return None
+
+    return _bridge
+
+
+def _make_observer_bridge(event, specs):
+    """post_tool_call / on_session_start / on_session_end: observers.
+    Hermes ignores the return values; the bridge exists so hook commands
+    still see the event. Fail-open: exceptions are swallowed by Hermes'
+    own dispatch, and the bridge itself never raises."""
+
+    def _bridge(**kwargs):
+        for spec in specs:
+            _run_hook_commands(event, spec, **kwargs)
+        return None
+
+    return _bridge
+
+
+def _make_transform_bridge(event, specs):
+    """transform_tool_result: replace the result only when a command
+    emitted an updatedToolOutput payload; otherwise None (unchanged).
+    First replacement wins, matching Hermes' first-str-wins contract."""
+
+    def _bridge(**kwargs):
+        for spec in specs:
+            for out in _run_hook_commands(event, spec, **kwargs):
+                if not isinstance(out, dict):
+                    continue
+                payload = out.get("__stdout_json__")
+                if not isinstance(payload, dict):
+                    continue
+                hso = payload.get("hookSpecificOutput")
+                updated = None
+                if isinstance(hso, dict):
+                    updated = hso.get("updatedToolOutput")
+                if updated is None:
+                    updated = payload.get("updatedToolOutput")
+                if isinstance(updated, str):
+                    return updated
+        return None
+
+    return _bridge
+
+
+def _register_hook_bridges(ctx):
+    # Group specs by Hermes event name; _HOOK_EVENTS is a list of translated
+    # entries (one per Claude hooks.json line), NOT one per event.
+    by_event = {}
+    for spec in _HOOK_EVENTS:
+        by_event.setdefault(spec["event"], []).append(spec)
+    for event, specs in by_event.items():
+        if event == "pre_tool_call":
+            bridge = _make_gate_bridge(event, specs)
+        elif event == "transform_tool_result":
+            bridge = _make_transform_bridge(event, specs)
+        else:
+            bridge = _make_observer_bridge(event, specs)
+        ctx.register_hook(event, bridge)
+
 === .hermes-plugin/plugin.yaml ===
 # GENERATED by everyharness — edit everyharness.yaml instead
 name: kitchen-sink
@@ -228,7 +434,11 @@ version: 0.1.0
 description: Fixture plugin exercising every component type
 author: Prime Radiant
 provides_hooks:
+  - on_session_start
+  - post_tool_call
   - pre_llm_call
+  - pre_tool_call
+  - transform_tool_result
 
 === .kimi-plugin/plugin.json ===
 {
@@ -696,6 +906,7 @@ gemini extensions install https://github.com/prime-radiant-inc/everyharness
 ## What gets emitted
 
 - \`.hermes-plugin/plugin.yaml\` and \`.hermes-plugin/__init__.py\`, which register every skill natively and (when bootstrap is configured) inject bootstrap content via \`pre_llm_call\`
+- a hooks bridge translating Claude-format hook events onto Hermes hooks (\`pre_tool_call\`, \`post_tool_call\`, \`transform_tool_result\`, \`on_session_start\`, \`on_session_end\`)
 
 ## Installing
 
@@ -710,6 +921,16 @@ Hermes registers every skill natively via \`register_skill\`; when bootstrap is 
 - Hermes prints \`kitchen-sink doesn't contain plugin.yaml or __init__.py. It may not be a valid Hermes plugin.\` during install. That warning is expected — everyharness emits those files under \`.hermes-plugin/\`, which Hermes locates after the warning. Confirm the install with \`hermes plugins list --plain --no-bundled\`.
 - \`hermes plugins enable\` takes the manifest name (\`kitchen-sink\`), not the checkout directory name — the two differ whenever the directory is named something else.
 - Hermes imports \`.hermes-plugin/__init__.py\` as a Python package on every load, so Python writes \`.hermes-plugin/__pycache__/\` next to it. Add \`__pycache__/\` to your \`.gitignore\`; everyharness never edits user files, so it will not do this for you.
+
+## Hook translation notes
+
+- Hook commands run with the Claude Code wire protocol: the event JSON arrives on stdin (\`hook_event_name\`, \`tool_name\`, \`tool_input\`, \`session_id\`, \`cwd\`, \`extra\`); decisions return via stdout JSON or exit code 2 (exit 2 blocks only \`PreToolUse\`).
+- \`PreToolUse\` maps to the fail-closed \`pre_tool_call\` gate: a JSON \`{decision: "block", reason}\` or \`{hookSpecificOutput: {permissionDecision: "deny", ...}}\` (or exit 2) blocks the tool with that reason.
+- \`PostToolUse\` maps to the \`post_tool_call\` observer, and an \`updatedToolOutput\` payload in its stdout replaces the tool result via \`transform_tool_result\`.
+- \`SessionStart\` maps to \`on_session_start\`, an observer only: Hermes ignores that hook's return values, so Claude's \`additionalContext\` cannot be injected through it. Hooks that need to inject context must use the bootstrap path instead.
+- \`SessionEnd\` maps to \`on_session_end\` (also observer-only; Claude gives it no decision control either).
+- Every other Claude hook event (UserPromptSubmit, Stop, Notification, ...) has no Hermes analog and is reported as a generate-time warning, never silently dropped.
+- The matcher regex is honored only for tool events (\`PreToolUse\`/\`PostToolUse\`), matching both Claude and Hermes semantics.
 
 === docs/install/kimi.md ===
 <!-- GENERATED by everyharness — edit everyharness.yaml instead -->
@@ -818,7 +1039,7 @@ Pi discovers the extension and skills directory through the \`pi\` field in \`pa
 | gemini | full | full | none | none | none | full |
 | opencode | full | full | partial | none | none | full |
 | pi | full | none | none | none | none | full |
-| hermes | full | none | none | none | none | full |
+| hermes | full | none | none | full | none | full |
 | muse | full | none | none | full | none | full |
 | agent-plugins-1.0 | full | none | none | none | full | none |
 | agents-marketplace | none | none | none | none | none | none |
@@ -875,6 +1096,28 @@ Pi discovers the extension and skills directory through the \`pi\` field in \`pa
             "command": "\\"\${CLAUDE_PLUGIN_ROOT}/hooks/everyharness/run-hook.cmd\\" session-start",
             "shell": "bash",
             "async": false
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "terminal",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \\"import json,sys; p=json.load(sys.stdin); ti=p.get('tool_input'); ti=ti if isinstance(ti, dict) else {}; print(json.dumps({'decision':'block','reason':'kitchen-sink PreToolUse guard: ' + p['tool_name']})) if ti.get('danger') else None\\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \\"import json,sys; json.load(sys.stdin); print(json.dumps({'hookSpecificOutput':{'hookEventName':'PostToolUse','updatedToolOutput':'kitchen-sink PostToolUse rewrite'}}))\\""
           }
         ]
       }
