@@ -1,0 +1,21 @@
+src/adapters/agent-plugins.ts
+  s_4439eb91114907::t_2b7c6fff582ebf 58,70-81
+  s_4439eb91114907::t_9863d16f4a4fc0 5
+  s_4439eb91114907::t_94169f9b27b9ea 82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.6",
+  "base_commit_sha": "5719f4ae38a1875828a1113d7136458cedbb5bf4",
+  "prompts": {},
+  "sessions": {
+    "s_4439eb91114907": {
+      "agent_id": {
+        "tool": "hermes",
+        "id": "20261103_144259_6bf69a",
+        "model": "smart-router"
+      },
+      "human_author": "Phil Beyer <6152278+pjbeyer@users.noreply.github.com>"
+    }
+  }
+}
