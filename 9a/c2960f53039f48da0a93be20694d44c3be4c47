@@ -1,0 +1,34 @@
+src/adapters/hermes.ts
+  s_4439eb91114907::t_068c8eebf9e10a 238-243
+  s_4439eb91114907::t_4f51b31ac6eb98 555
+  s_4439eb91114907::t_635287d46c1358 33-237,244-253,277,279,284-288,290-291
+  s_4439eb91114907::t_2c73d3afbe6ac9 573-575
+  s_4439eb91114907::t_8f871c042a7007 254-267,276
+  s_4439eb91114907::t_cddd60c8fbafa7 360
+  s_4439eb91114907::t_dfed1d10688f51 450-455,460-461
+  s_4439eb91114907::t_5a2b8751fb617a 268-275
+  s_4439eb91114907::t_4612271738657e 278,280-283,289
+  s_4439eb91114907::t_52ae16bfc08f31 8
+  s_4439eb91114907::t_3b01f2726a236b 443
+  s_4439eb91114907::t_4d541c76a4869e 456-459,462,477-483
+  s_4439eb91114907::t_1bb29e3f94900b 508-511
+  s_4439eb91114907::t_46093517ee41dc 532-545
+src/adapters/hermes-hooks.ts
+  s_4439eb91114907::t_4e8c1de9f818e0 1-139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.6",
+  "base_commit_sha": "9ac2960f53039f48da0a93be20694d44c3be4c47",
+  "prompts": {},
+  "sessions": {
+    "s_4439eb91114907": {
+      "agent_id": {
+        "tool": "hermes",
+        "id": "20261103_144259_6bf69a",
+        "model": "smart-router"
+      },
+      "human_author": "Phil Beyer <6152278+pjbeyer@users.noreply.github.com>"
+    }
+  }
+}
