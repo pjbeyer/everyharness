@@ -123,6 +123,7 @@ describe('emitDocs support-matrix.md', () => {
         "- `agents-marketplace`'s row is all `none`: droid, grok, and copilot ride the claude-code layout via the marketplace descriptor it emits; the row reflects only agents-marketplace's own emission, not what those clients receive through that descriptor.",
         "- codex's `bootstrap: partial` means native skill discovery only, with no active injection hook; devin's `bootstrap: none` means no injection mechanism is documented at all.",
         '- Repos consuming shell-hook output should add `hooks/everyharness/* text eol=lf` to .gitattributes or accept drift warnings on autocrlf checkouts.',
+        "- hermes' `hooks: full` and `mcp: full` both ride translation layers: hooks bridge onto Hermes' native hook events with the Claude Code wire protocol (JSON on stdin, exit 2 blocks `PreToolUse`), and MCP servers are emitted as a portable Agent Plugins v1 `mcp.json` because Hermes has no `ctx.register` API for MCP. In a dual-manifest install (root `plugin.json` + `.hermes-plugin/`) the portable manifest wins discovery and the native hooks module does not run — see docs/install/hermes.md.",
         '',
       ].join('\n'),
     )

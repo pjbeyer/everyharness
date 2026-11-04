@@ -920,8 +920,9 @@ Hermes registers every skill natively via \`register_skill\`; when bootstrap is 
 ## Caveats
 
 - Hermes prints \`kitchen-sink doesn't contain plugin.yaml or __init__.py. It may not be a valid Hermes plugin.\` during install. That warning is expected — everyharness emits those files under \`.hermes-plugin/\`, which Hermes locates after the warning. Confirm the install with \`hermes plugins list --plain --no-bundled\`.
-- \`hermes plugins enable\` takes the manifest name (\`\${config.name}\`), not the checkout directory name — the two differ whenever the directory is named something else.
+- \`hermes plugins enable\` takes the manifest name (\`kitchen-sink\`), not the checkout directory name — the two differ whenever the directory is named something else.
 - Hermes imports \`.hermes-plugin/__init__.py\` as a Python package on every load, so Python writes \`.hermes-plugin/__pycache__/\` next to it. Add \`__pycache__/\` to your \`.gitignore\`; everyharness never edits user files, so it will not do this for you.
+- \`ctx.register_skill\` requires a \`pathlib.Path\`, not a \`str\` — the emitted \`__init__.py\` already wraps every path in \`Path(...)\`, but hand edits that drop the wrapper silently disable the whole plugin (the \`AttributeError\` is swallowed by Hermes’ plugin loader).
 
 ## Hook translation notes
 
@@ -1069,6 +1070,7 @@ Pi discovers the extension and skills directory through the \`pi\` field in \`pa
 - \`agents-marketplace\`'s row is all \`none\`: droid, grok, and copilot ride the claude-code layout via the marketplace descriptor it emits; the row reflects only agents-marketplace's own emission, not what those clients receive through that descriptor.
 - codex's \`bootstrap: partial\` means native skill discovery only, with no active injection hook; devin's \`bootstrap: none\` means no injection mechanism is documented at all.
 - Repos consuming shell-hook output should add \`hooks/everyharness/* text eol=lf\` to .gitattributes or accept drift warnings on autocrlf checkouts.
+- hermes' \`hooks: full\` and \`mcp: full\` both ride translation layers: hooks bridge onto Hermes' native hook events with the Claude Code wire protocol (JSON on stdin, exit 2 blocks \`PreToolUse\`), and MCP servers are emitted as a portable Agent Plugins v1 \`mcp.json\` because Hermes has no \`ctx.register\` API for MCP. In a dual-manifest install (root \`plugin.json\` + \`.hermes-plugin/\`) the portable manifest wins discovery and the native hooks module does not run — see docs/install/hermes.md.
 
 === gemini-extension.json ===
 {
