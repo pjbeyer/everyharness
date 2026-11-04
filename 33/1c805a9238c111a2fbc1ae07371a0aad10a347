@@ -1,0 +1,23 @@
+src/docs-emit.ts
+  s_4439eb91114907::t_f5805e8c60b61b 57
+src/adapters/hermes.ts
+  s_4439eb91114907::t_4a009bd8bbae78 534,536
+tests/docs-emit.test.ts
+  s_4439eb91114907::t_fcf9b2f694da2e 126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.6",
+  "base_commit_sha": "331c805a9238c111a2fbc1ae07371a0aad10a347",
+  "prompts": {},
+  "sessions": {
+    "s_4439eb91114907": {
+      "agent_id": {
+        "tool": "hermes",
+        "id": "20261103_144259_6bf69a",
+        "model": "smart-router"
+      },
+      "human_author": "Phil Beyer <6152278+pjbeyer@users.noreply.github.com>"
+    }
+  }
+}
