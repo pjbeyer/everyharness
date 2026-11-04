@@ -59,17 +59,16 @@ describe('hermes adapter', () => {
       skills: 'full',
       commands: 'none',
       agents: 'none',
-      hooks: 'none',
+      hooks: 'full',
       mcp: 'none',
       bootstrap: 'full',
     })
   })
 
-  it('warns about commands, agents, hooks, and mcp', () => {
+  it('warns about commands, agents, and mcp (hooks translate now)', () => {
     expect(result.warnings).toEqual([
       'commands are not emitted for hermes',
       'agents are not emitted for hermes',
-      'hooks are not emitted for hermes',
       'mcp servers are not emitted for hermes',
     ])
   })
@@ -90,8 +89,20 @@ describe('hermes adapter', () => {
         version: '0.1.0',
         description: 'Fixture plugin exercising every component type',
         author: 'Prime Radiant',
-        provides_hooks: ['pre_llm_call'],
+        provides_hooks: [
+          'on_session_start',
+          'post_tool_call',
+          'pre_llm_call',
+          'pre_tool_call',
+          'transform_tool_result',
+        ],
       })
+    })
+
+    it('derives provides_hooks — no hand-maintained hook list can drift', () => {
+      const lines = content.split('\n')
+      const parsed = parse(lines.slice(1).join('\n')) as { provides_hooks?: string[] }
+      expect(parsed.provides_hooks).toEqual([...new Set(parsed.provides_hooks)].sort())
     })
   })
 
@@ -374,5 +385,267 @@ describe('hermes plugin.py -- execution smoke test', () => {
 
     // Ensure the emitted Python is syntactically valid (this catches quote/backslash injection attacks)
     expect(pyCompile(initPy).status).toBe(0)
+  })
+})
+
+// Full hooks-bridge execution smoke: a fixture plugin with all four mappable
+// Claude hook classes (PreToolUse / PostToolUse / SessionStart / SessionEnd —
+// PostToolUse covers both post_tool_call and transform_tool_result), driven
+// through the emitted __init__.py with a FakeCtx. Proves each bridge fires,
+// the Claude wire payload reaches the command on stdin, and each decision
+// shape translates to the Hermes contract.
+describe('hermes adapter hooks bridge -- execution smoke test', () => {
+  function hooksFixtureDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'eh-hermes-hooks-'))
+    writeFileSync(
+      join(dir, 'everyharness.yaml'),
+      'name: hooky\nversion: 1.0.0\ndescription: hooks bridge fixture\nbootstrap: none\n',
+    )
+    mkdirSync(join(dir, 'skills', 'a-skill'), { recursive: true })
+    writeFileSync(
+      join(dir, 'skills', 'a-skill', 'SKILL.md'),
+      '---\nname: a-skill\ndescription: hooks fixture skill\n---\n\n# A Skill\n\nSkill body.\n',
+    )
+    mkdirSync(join(dir, 'hooks'), { recursive: true })
+    // Every command is a tiny python3 script speaking the Claude wire protocol.
+    writeFileSync(
+      join(dir, 'hooks', 'hooks.json'),
+      JSON.stringify(
+        {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'terminal',
+                hooks: [
+                  {
+                    type: 'command',
+                    command:
+                      "python3 -c \"import json,sys; p=json.load(sys.stdin); ti=p.get('tool_input'); ti=ti if isinstance(ti, dict) else {}; print(json.dumps({'decision':'block','reason':'hooky blocked ' + p['tool_name']})) if ti.get('danger') else None\"",
+                  },
+                ],
+              },
+            ],
+            PostToolUse: [
+              {
+                matcher: '.*',
+                hooks: [
+                  {
+                    type: 'command',
+                    command:
+                      "python3 -c \"import json,sys; p=json.load(sys.stdin); print(json.dumps({'hookSpecificOutput':{'hookEventName':'PostToolUse','updatedToolOutput':'hooky rewrote ' + p['tool_name']}}))\"",
+                  },
+                ],
+              },
+            ],
+            SessionStart: [
+              {
+                hooks: [{ type: 'command', command: "python3 -c \"import json,sys; json.load(sys.stdin)\"" },
+                ],
+              },
+            ],
+            SessionEnd: [
+              {
+                hooks: [{ type: 'command', command: "python3 -c \"import json,sys; json.load(sys.stdin)\"" },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ),
+    )
+    return dir
+  }
+
+  it('fires every hook class and translates decisions to the Hermes contract', () => {
+    const dir = hooksFixtureDir()
+    const hookyModel = buildModel(dir)
+    const result = hermes.emit(hookyModel)
+    expect(result.warnings).toEqual([])
+    writeFileSet(dir, result.files)
+
+    const initPath = join(dir, '.hermes-plugin', '__init__.py')
+    const driverPath = join(dir, 'driver.py')
+    writeFileSync(
+      driverPath,
+      [
+        'import importlib.util',
+        'import json',
+        'import pathlib',
+        'import sys',
+        '',
+        `spec = importlib.util.spec_from_file_location("plugin_mod", ${JSON.stringify(initPath)})`,
+        'mod = importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(mod)',
+        '',
+        'hooks = {}',
+        '',
+        'class FakeCtx:',
+        '    def register_skill(self, name, path):',
+        '        pass',
+        '',
+        '    def register_hook(self, name, fn):',
+        '        hooks[name] = fn',
+        '',
+        'ctx = FakeCtx()',
+        'mod.register(ctx)',
+        '',
+        '# All five Hermes hook events registered',
+        'expected = ["on_session_end", "on_session_start", "post_tool_call",',
+        '            "pre_tool_call", "transform_tool_result"]',
+        'assert sorted(hooks) == expected, f"registered {sorted(hooks)}"',
+        '',
+        '# 1. pre_tool_call gate: matcher honors "terminal", JSON decision blocks',
+        'r = hooks["pre_tool_call"](tool_name="terminal", args={"danger": True}, session_id="s1")',
+        'assert r == {"action": "block", "message": "hooky blocked terminal"}, r',
+        '',
+        '#    non-matching tool passes even when the guard would deny',
+        'r = hooks["pre_tool_call"](tool_name="write_file", args={"danger": True}, session_id="s1")',
+        'assert r is None, r',
+        '',
+        '#    matching tool without the danger flag passes',
+        'r = hooks["pre_tool_call"](tool_name="terminal", args={"path": "/tmp/x"}, session_id="s1")',
+        'assert r is None, r',
+        '',
+        '# 2. Double-encoded JSON envelope: tool_input arrives as a JSON string',
+        '#    containing JSON; the bridge must decode before the guard sees it.',
+        'inner = json.dumps({"danger": True})',
+        'r = hooks["pre_tool_call"](tool_name="terminal", args=inner, session_id="s1")',
+        'assert r == {"action": "block", "message": "hooky blocked terminal"}, r',
+        '',
+        '# 3. transform_tool_result: updatedToolOutput replaces the result',
+        'r = hooks["transform_tool_result"](tool_name="terminal", args={}, result="original", session_id="s1")',
+        'assert r == "hooky rewrote terminal", r',
+        '',
+        '# 4. post_tool_call / on_session_start / on_session_end: observers,',
+        '#    commands run (stdin payload consumed), return None',
+        'r = hooks["post_tool_call"](tool_name="terminal", args={}, result="original", session_id="s1", status="ok")',
+        'assert r is None, r',
+        'r = hooks["on_session_start"](session_id="s1")',
+        'assert r is None, r',
+        'r = hooks["on_session_end"](session_id="s1", completed=True, interrupted=False)',
+        'assert r is None, r',
+        '',
+        'print("HOOKS_SMOKE_OK")',
+        '',
+      ].join('\n'),
+    )
+
+    const proc = execFileSync('python3', [driverPath], { encoding: 'utf8' })
+    expect(proc).toContain('HOOKS_SMOKE_OK')
+  })
+
+  it('translates exit-2 blocking on pre_tool_call (no JSON needed)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'eh-hermes-exit2-'))
+    writeFileSync(
+      join(dir, 'everyharness.yaml'),
+      'name: exit2\nversion: 1.0.0\ndescription: exit-2 fixture\nbootstrap: none\n',
+    )
+    mkdirSync(join(dir, 'skills', 'a-skill'), { recursive: true })
+    writeFileSync(
+      join(dir, 'skills', 'a-skill', 'SKILL.md'),
+      '---\nname: a-skill\ndescription: exit2 skill\n---\n\n# A Skill\n\nBody.\n',
+    )
+    mkdirSync(join(dir, 'hooks'), { recursive: true })
+    writeFileSync(
+      join(dir, 'hooks', 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    "python3 -c \"import json,sys; json.load(sys.stdin); import sys as s; s.stderr.write('exit2 says no'); s.exit(2)\"",
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+    const exitModel = buildModel(dir)
+    const result = hermes.emit(exitModel)
+    writeFileSet(dir, result.files)
+
+    const initPath = join(dir, '.hermes-plugin', '__init__.py')
+    const driverPath = join(dir, 'driver.py')
+    writeFileSync(
+      driverPath,
+      [
+        'import importlib.util',
+        '',
+        `spec = importlib.util.spec_from_file_location("plugin_mod", ${JSON.stringify(initPath)})`,
+        'mod = importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(mod)',
+        '',
+        'hooks = {}',
+        'class FakeCtx:',
+        '    def register_skill(self, name, path): pass',
+        '    def register_hook(self, name, fn): hooks[name] = fn',
+        '',
+        'mod.register(FakeCtx())',
+        'r = hooks["pre_tool_call"](tool_name="anything", args={}, session_id="s")',
+        'assert r == {"action": "block", "message": "exit2 says no"}, r',
+        'print("EXIT2_OK")',
+      ].join('\n'),
+    )
+    const proc = execFileSync('python3', [driverPath], { encoding: 'utf8' })
+    expect(proc).toContain('EXIT2_OK')
+  })
+
+  it('warns per unmapped Claude event but still translates the mapped ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'eh-hermes-unmapped-'))
+    writeFileSync(
+      join(dir, 'everyharness.yaml'),
+      'name: unmix\nversion: 1.0.0\ndescription: unmapped-events fixture\nbootstrap: none\n',
+    )
+    mkdirSync(join(dir, 'skills', 'a-skill'), { recursive: true })
+    writeFileSync(
+      join(dir, 'skills', 'a-skill', 'SKILL.md'),
+      '---\nname: a-skill\ndescription: unmapped skill\n---\n\n# A Skill\n\nBody.\n',
+    )
+    mkdirSync(join(dir, 'hooks'), { recursive: true })
+    writeFileSync(
+      join(dir, 'hooks', 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'echo hi' }] }],
+          SessionEnd: [{ hooks: [{ type: 'command', command: 'echo bye' }] }],
+        },
+      }),
+    )
+    const unModel = buildModel(dir)
+    const result = hermes.emit(unModel)
+    expect(result.warnings).toEqual([
+      'hermes hooks: Claude event UserPromptSubmit has no Hermes analog; not emitted',
+    ])
+    const py = result.files.find((f) => f.path === '.hermes-plugin/__init__.py')!.content
+    expect(py).toContain('on_session_end')
+    // The dropped event is reported as a generate-time warning, never written
+    // into the emitted Python (honest degradation is visible in warnings).
+    expect(result.warnings.join('\n')).toContain('UserPromptSubmit')
+    expect(py).not.toContain('UserPromptSubmit')
+    expect(pyCompile(py).status).toBe(0)
+  })
+
+  it('emits byte-identical output when no hooks component exists (no dead bridge code)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'eh-hermes-nohooks-'))
+    writeFileSync(
+      join(dir, 'everyharness.yaml'),
+      'name: nohooks\nversion: 1.0.0\ndescription: no-hooks fixture\nbootstrap: none\n',
+    )
+    mkdirSync(join(dir, 'skills', 'a-skill'), { recursive: true })
+    writeFileSync(
+      join(dir, 'skills', 'a-skill', 'SKILL.md'),
+      '---\nname: a-skill\ndescription: nohooks skill\n---\n\n# A Skill\n\nBody.\n',
+    )
+    const noModel = buildModel(dir)
+    const py = hermes.emit(noModel).files.find((f) => f.path === '.hermes-plugin/__init__.py')!.content
+    expect(py).not.toContain('_register_hook_bridges')
+    expect(py).not.toContain('_HOOK_EVENTS')
+    expect(py).not.toMatch(/__[A-Z_]+__/)
   })
 })

@@ -10,6 +10,28 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "terminal",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,sys; p=json.load(sys.stdin); ti=p.get('tool_input'); ti=ti if isinstance(ti, dict) else {}; print(json.dumps({'decision':'block','reason':'kitchen-sink PreToolUse guard: ' + p['tool_name']})) if ti.get('danger') else None\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,sys; json.load(sys.stdin); print(json.dumps({'hookSpecificOutput':{'hookEventName':'PostToolUse','updatedToolOutput':'kitchen-sink PostToolUse rewrite'}}))\""
+          }
+        ]
+      }
     ]
   }
 }
