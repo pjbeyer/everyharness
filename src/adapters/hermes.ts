@@ -2,10 +2,11 @@ import { stringify } from 'yaml'
 import type { GeneratedFile } from '../fileset.js'
 import type { PluginModel } from '../model.js'
 import type { HarnessAdapter, EmitResult } from './types.js'
-import { githubOwnerRepo } from './shared.js'
+import { githubOwnerRepo, json } from './shared.js'
 import { bootstrapContentPath } from '../bootstrap/node-package.js'
 import { generatedBootstrap, GENERATED_BOOTSTRAP_PATH } from '../bootstrap/generated.js'
 import { translateClaudeHooks, hermesHookNames, type TranslatedHook } from './hermes-hooks.js'
+import { translateMcpForHermes } from './hermes-mcp.js'
 
 // Hermes' Python plugin module (`.hermes-plugin/__init__.py`), modeled
 // directly on superpowers' own `.hermes-plugin/__init__.py`: a two-layout
@@ -509,6 +510,10 @@ function installDoc(model: PluginModel): string {
   if (translated.length) {
     emitted.push('a hooks bridge translating Claude-format hook events onto Hermes hooks (`pre_tool_call`, `post_tool_call`, `transform_tool_result`, `on_session_start`, `on_session_end`)')
   }
+  const { manifest: mcpManifest, warnings: mcpWarnings } = translateMcpForHermes(model)
+  if (mcpManifest) {
+    emitted.push('`mcp.json` at the plugin root, translated from the plugin\'s MCP server config (Hermes loads MCP servers through the Agent Plugins v1 portable-package mechanism — there is no `ctx.register` API for MCP)')
+  }
 
   const lines = [
     '## What gets emitted',
@@ -526,7 +531,7 @@ function installDoc(model: PluginModel): string {
     '## Caveats',
     '',
     `- Hermes prints \`${config.name} doesn't contain plugin.yaml or __init__.py. It may not be a valid Hermes plugin.\` during install. That warning is expected — everyharness emits those files under \`.hermes-plugin/\`, which Hermes locates after the warning. Confirm the install with \`hermes plugins list --plain --no-bundled\`.`,
-    `- \`hermes plugins enable\` takes the manifest name (\`${config.name}\`), not the checkout directory name — the two differ whenever the directory is named something else.`,
+    "- `hermes plugins enable` takes the manifest name (`${config.name}`), not the checkout directory name — the two differ whenever the directory is named something else.",
     '- Hermes imports `.hermes-plugin/__init__.py` as a Python package on every load, so Python writes `.hermes-plugin/__pycache__/` next to it. Add `__pycache__/` to your `.gitignore`; everyharness never edits user files, so it will not do this for you.',
   ]
   if (translated.length) {
@@ -543,6 +548,38 @@ function installDoc(model: PluginModel): string {
       '- The matcher regex is honored only for tool events (`PreToolUse`/`PostToolUse`), matching both Claude and Hermes semantics.',
     )
   }
+  if (mcpManifest) {
+    lines.push(
+      '',
+      '## MCP translation notes',
+      '',
+      "- Hermes loads MCP servers through the Agent Plugins v1 portable-package mechanism: a root `mcp.json` with exactly `{$schema, mcpServers}`. There is no plugin-API registration for MCP servers.",
+      '- Server names are NOT prefixed with the plugin identity — a portable server named `ks-demo` is addressed as `mcp__ks-demo__<tool>`. A name collision with a native `config.yaml` `mcp_servers` entry keeps the NATIVE entry (the plugin server is additive, never overriding; only its declared cost keys carry over when the native entry lacks them).',
+      '- `stdio` commands must be a single executable token (bare name or `./`-relative, resolved against the plugin root). `PLUGIN_ROOT` and `PLUGIN_DATA` are reserved env keys (Hermes injects them itself).',
+      '- `sse` transport is rejected by Hermes (Agent Plugins v1 §7.2.1 allows only `streamable-http` for remote servers) — everyharness refuses it at generate time with a pointed error.',
+      '- `${VAR}` placeholders in env/args/headers values pass through literally and resolve at runtime from the profile\'s environment/secret scope — keep secrets env-injected, never literal in `mcp.json`. A remote server whose url/headers still contain a literal `${VAR}` at load fails closed with a missing-credential error.',
+      '- Server declarations (`trust`, `timeout`, `costs`, `spend_limit`, `cost_unit`, and app/`requires`/`liveness`) are declared in everyharness.yaml under `harnesses.hermes.servers.<name>` and emitted into `plugin.json` under `extensions."com.nousresearch.hermes".servers`.',
+    )
+  }
+  // Dual-manifest constraint (verified by hermetic PluginManager probe,
+  // 2026-11-04): when the install also carries a root plugin.json (any
+  // generate with the agent-plugins-1.0 adapter active), portable
+  // discovery wins and the native hooks module never runs. Say so — the
+  // alternative is an author wondering why their hooks are silent.
+  if (mcpManifest && translated.length) {
+    lines.push(
+      '',
+      '## Dual-manifest note',
+      '',
+      '```',
+      'This install carries both a root plugin.json (Agent Plugins v1) and .hermes-plugin/',
+      '(native). Hermes loads the PORTABLE manifest when both exist, so the hooks bridge',
+      'in .hermes-plugin/__init__.py does NOT run in this configuration — hooks fire only',
+      'when the native manifest is the one Hermes discovers (no root plugin.json). Skills and',
+      'MCP servers load through the portable path in both configurations.',
+      '```',
+    )
+  }
   return lines.join('\n')
 }
 
@@ -553,7 +590,7 @@ export const hermes: HarnessAdapter = {
     commands: 'none',
     agents: 'none',
     hooks: 'full',
-    mcp: 'none',
+    mcp: 'full',
     bootstrap: 'full',
   },
   installDoc,
@@ -568,12 +605,39 @@ export const hermes: HarnessAdapter = {
       files.push({ path: GENERATED_BOOTSTRAP_PATH, content: generatedBootstrap(model) })
     }
 
+    // MCP: Hermes consumes servers via the Agent Plugins v1 portable
+    // package (root mcp.json), NOT via the plugin API. The translation is
+    // shared with the agent-plugins-1.0 adapter and byte-identical, so a
+    // generate with both adapters active dedupes the single mcp.json.
+    // The same dedupe guarantee is why sse rejection throws here too:
+    // both adapters must agree the server set is invalid.
+    const { manifest: mcp, warnings: mcpWarnings } = translateMcpForHermes(model)
+    warnings.push(...mcpWarnings)
+    if (mcp && model.config.components.mcp !== 'mcp.json') {
+      files.push({ path: 'mcp.json', content: json(mcp) })
+    } else if (mcp && model.config.components.mcp === 'mcp.json') {
+      warnings.push(
+        'mcp.json is occupied by the source MCP config (components.mcp); hermes mcp output skipped — rename the source to .mcp.json',
+      )
+    }
+    // Server declarations (harnesses.hermes.servers) ride in the root
+    // plugin.json's extensions block, emitted by the agent-plugins-1.0
+    // adapter. When that adapter is excluded the declarations cannot be
+    // delivered through any file Hermes reads — say so instead of
+    // silently dropping them.
+    const hasDeclarations =
+      Object.keys(model.config.harnesses.settings['hermes']?.servers ?? {}).length > 0
+    if (hasDeclarations && model.config.harnesses.exclude.includes('agent-plugins-1.0')) {
+      warnings.push(
+        'harnesses.hermes.servers declarations are emitted into plugin.json by the agent-plugins-1.0 adapter, which is excluded; declarations not delivered',
+      )
+    }
+
     if (model.commands.length) warnings.push('commands are not emitted for hermes')
     if (model.agents.length) warnings.push('agents are not emitted for hermes')
     // hooks are translated (PreToolUse/PostToolUse/SessionStart/SessionEnd);
     // any UNMAPPABLE Claude event inside the hooks file becomes its own warning.
     warnings.push(...translateClaudeHooks(model.hooks).warnings)
-    if (model.mcp !== undefined) warnings.push('mcp servers are not emitted for hermes')
 
     return { files, warnings }
   },
