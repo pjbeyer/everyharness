@@ -1,0 +1,31 @@
+tests/docs-emit.test.ts
+  s_4439eb91114907::t_f23771a9e13749 116
+fixtures/kitchen-sink/hooks/hooks.json
+  s_4439eb91114907::t_54fd07c1d8f195 13-34
+tests/adapters/hermes.test.ts
+  s_4439eb91114907::t_bd7da18cdae954 390-494,497-626,631-650
+  s_4439eb91114907::t_1082f26b526bfe 92-98,101-105
+  s_4439eb91114907::t_bb09d6a2e286db 62,68
+  s_4439eb91114907::t_46aa6dad42682c 495-496
+  s_4439eb91114907::t_be1cf40046cf71 627-630
+  s_4439eb91114907::t_c817748e700417 106
+  s_4439eb91114907::t_2d65d86efb3bf0 651
+tests/adapters/hermes-hooks.test.ts
+  s_4439eb91114907::t_3d26d04d8a6e17 1-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.6",
+  "base_commit_sha": "4a26b627b00248be2f4777a8dc469f40a3b8a1be",
+  "prompts": {},
+  "sessions": {
+    "s_4439eb91114907": {
+      "agent_id": {
+        "tool": "hermes",
+        "id": "20261103_144259_6bf69a",
+        "model": "smart-router"
+      },
+      "human_author": "Phil Beyer <6152278+pjbeyer@users.noreply.github.com>"
+    }
+  }
+}
