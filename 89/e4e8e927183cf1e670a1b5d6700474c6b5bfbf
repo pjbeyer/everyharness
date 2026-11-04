@@ -1,0 +1,28 @@
+src/adapters/hermes-mcp.ts
+  s_4439eb91114907::t_d203f7bdf57437 82
+  s_4439eb91114907::t_9a91199fa590f7 1-52,55-81,83-90,92-186
+  s_4439eb91114907::t_1658e731c8ce7a 91
+  s_4439eb91114907::t_67813f17c02553 53-54
+src/adapters/hermes.ts
+  s_4439eb91114907::t_76cef77baf7855 593,608-635
+  s_4439eb91114907::t_1051bf6b3d0df9 9
+  s_4439eb91114907::t_a2a091a5c04e8c 551-582
+  s_4439eb91114907::t_697ae57e33ef60 513-516,534
+  s_4439eb91114907::t_0b090c691a798c 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.6",
+  "base_commit_sha": "89e4e8e927183cf1e670a1b5d6700474c6b5bfbf",
+  "prompts": {},
+  "sessions": {
+    "s_4439eb91114907": {
+      "agent_id": {
+        "tool": "hermes",
+        "id": "20261103_144259_6bf69a",
+        "model": "smart-router"
+      },
+      "human_author": "Phil Beyer <6152278+pjbeyer@users.noreply.github.com>"
+    }
+  }
+}
