@@ -308,8 +308,24 @@ describe('generate', () => {
   })
 
   it('warns about a stray root mcp.json when the MCP source default was not customized away from .mcp.json', () => {
-    const dir = freshFixture()
-    rmSync(join(dir, '.mcp.json'))
+    // Self-contained minimal fixture (not kitchen-sink): the kitchen-sink
+    // fixture carries harnesses.hermes.servers declarations, and with the
+    // MCP source removed those declarations correctly hard-error (a
+    // declaration naming a server with no mcp.json entry would emit a
+    // package Hermes refuses to load). This test is about the stray-file
+    // heuristic alone, so it runs without any hermes declarations.
+    const dir = mkdtempSync(join(tmpdir(), 'eh-gen-mcp-stray-'))
+    writeFileSync(
+      join(dir, 'everyharness.yaml'),
+      ['name: stray-mcp', 'version: 1.0.0', 'description: stray mcp.json fixture', 'bootstrap: none'].join(
+        '\n',
+      ),
+    )
+    mkdirSync(join(dir, 'skills', 'a-skill'), { recursive: true })
+    writeFileSync(
+      join(dir, 'skills', 'a-skill', 'SKILL.md'),
+      '---\nname: a-skill\ndescription: stray mcp fixture skill\n---\n\n# A Skill\n\nBody.\n',
+    )
     writeFileSync(join(dir, 'mcp.json'), JSON.stringify({ mcpServers: {} }))
     const result = generate(dir)
     expect(result.warnings).toContain(

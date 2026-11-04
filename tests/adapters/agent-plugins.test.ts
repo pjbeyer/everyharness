@@ -40,15 +40,31 @@ describe('agent-plugins-1.0 adapter', () => {
       license: 'MIT',
       repository: 'https://github.com/prime-radiant-inc/everyharness',
       keywords: ['fixture'],
+      // hermes server declarations (harnesses.hermes.servers in
+      // everyharness.yaml) ride in the hermes extension — this is the file
+      // a dual-manifest install actually loads, so it must carry them.
+      extensions: {
+        'com.nousresearch.hermes': {
+          servers: {
+            'ks-demo': { trust: 'untrusted', timeout: 30 },
+            'ks-remote': { costs: { per_call: 0.001 }, spend_limit: 5, cost_unit: 'USD' },
+          },
+        },
+      },
     })
   })
 
-  it('emits root mcp.json translating the kitchen-sink stdio server', () => {
+  it('emits root mcp.json translating both fixture servers', () => {
     const mcp = JSON.parse(byPath['mcp.json'])
     expect(mcp).toEqual({
       $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
       mcpServers: {
         'ks-demo': { type: 'stdio', command: 'node', args: ['./mcp-demo-server.js'] },
+        'ks-remote': {
+          type: 'streamable-http',
+          url: 'https://mcp.example.com/endpoint',
+          headers: { Authorization: 'Bearer ${KS_REMOTE_TOKEN}' },
+        },
       },
     })
   })

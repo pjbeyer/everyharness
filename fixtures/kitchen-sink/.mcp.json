@@ -3,6 +3,13 @@
     "ks-demo": {
       "command": "node",
       "args": ["./mcp-demo-server.js"]
+    },
+    "ks-remote": {
+      "type": "streamable-http",
+      "url": "https://mcp.example.com/endpoint",
+      "headers": {
+        "Authorization": "Bearer ${KS_REMOTE_TOKEN}"
+      }
     }
   }
 }

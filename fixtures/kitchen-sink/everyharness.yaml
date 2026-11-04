@@ -14,6 +14,15 @@ harnesses:
   claude-code:
     manifest:
       homepage: https://example.com/kitchen-sink
+  hermes:
+    servers:
+      ks-demo:
+        trust: untrusted
+        timeout: 30
+      ks-remote:
+        costs: { per_call: 0.001 }
+        spend_limit: 5.0
+        cost_unit: USD
 
 marketplace:
   name: kitchen-sink-market

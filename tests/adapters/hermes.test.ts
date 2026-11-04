@@ -60,16 +60,15 @@ describe('hermes adapter', () => {
       commands: 'none',
       agents: 'none',
       hooks: 'full',
-      mcp: 'none',
+      mcp: 'full',
       bootstrap: 'full',
     })
   })
 
-  it('warns about commands, agents, and mcp (hooks translate now)', () => {
+  it('warns about commands and agents (hooks and mcp translate now)', () => {
     expect(result.warnings).toEqual([
       'commands are not emitted for hermes',
       'agents are not emitted for hermes',
-      'mcp servers are not emitted for hermes',
     ])
   })
 
